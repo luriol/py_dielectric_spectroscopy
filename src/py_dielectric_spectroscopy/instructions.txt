@@ -1,0 +1,2 @@
+to resource this directory (but directory should be ../../) 
+pip install -e .
