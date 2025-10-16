@@ -8,6 +8,9 @@ import zipfile
 import numpy as np
 from scipy.optimize import root_scalar
 
+
+
+
 def pt1000_lookup(R_measured):
     """
     Given resistance R in ohms, return the corresponding temperature in °C
@@ -110,28 +113,80 @@ def parse_teensy_bin(raw):
         R_th = R_REF * V_th / (V_REF - V_th)
         T_C = pt1000_lookup(R_th)
 
-    return t_h, v_h, t_l1, v_l1, t_l2, v_l2, T_C
+    return t_h, v_h, t_l1, v_l1, t_l2, v_l2, T_C, R_th 
 
-def load_data_files(zip_path):
+import re
+
+def extract_number(fname):
+    """Extract the last integer in the filename (e.g., ..._10.bin → 10)."""
+    matches = re.findall(r'(\d+)', fname)
+    return int(matches[-1]) if matches else float('inf')
+
+
+# Sort by numeric index in filename
+
+def load_data_files(zip_path, verbose=True):
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        bin_files = [f for f in zip_ref.namelist() ]
+        # Only process actual files (no directories)
+        bin_files = sorted(
+            [f for f in zip_ref.namelist() if not f.endswith('/')],
+            key=extract_number
+        )
         all_times = []
         all_voltages = []
         all_temperatures = []
+        all_R_th = []
         vdata = {}
+
+        if verbose:
+            print(f"[INFO] Found {len(bin_files)} files in {zip_path.name}")
+
         for fname in bin_files:
-            with zip_ref.open(fname) as f:
-                raw = f.read()
-                t_h, v_h, t_l1, v_l1, t_l2, v_l2, T_C = parse_teensy_bin(raw)
+            info = zip_ref.getinfo(fname)
+            if info.file_size == 0:
+                if verbose:
+                    print(f"[WARN] Skipping empty file: {fname}")
+                continue
+
+            if verbose:
+                print(f"[INFO] Reading: {fname}  ({info.file_size} bytes)")
+
+            try:
+                with zip_ref.open(fname) as f:
+                    raw = f.read()
+
+                # Parse the binary data block
+                result = parse_teensy_bin(raw)
+                if result[0] is None:
+                    print(f"[WARN] Skipping corrupted file: {fname}")
+                    continue
+
+                t_h, v_h, t_l1, v_l1, t_l2, v_l2, T_C, R_th = result
+
+                # Concatenate all time and voltage segments
                 t_all = np.concatenate((t_h, t_l1, t_l2))
                 v_all = np.concatenate((v_h, v_l1, v_l2))
+
                 all_times.append(t_all)
                 all_voltages.append(v_all)
                 all_temperatures.append(T_C)
-                # print(f"Loaded {fname} at T = {T_C:.2f}°C")
-        vdata['times'] = all_times 
-        vdata['voltages'] = all_voltages 
-        vdata['temperatures'] = all_temperatures 
+                all_R_th.append(R_th)
+
+                if verbose and T_C is not None:
+                    print(f"  ✓ Parsed OK — T = {T_C:.2f} °C")
+
+            except Exception as e:
+                print(f"[ERROR] Failed to parse {fname}: {e}")
+                continue
+
+        vdata['times'] = all_times
+        vdata['voltages'] = all_voltages
+        vdata['temperatures'] = all_temperatures
+        vdata['R_th'] = all_R_th
+
+        if verbose:
+            print(f"[INFO] Loaded {len(all_times)} valid datasets from {zip_path.name}")
+
     return vdata
 
 def bin_by_t(vdata,delta_T):
