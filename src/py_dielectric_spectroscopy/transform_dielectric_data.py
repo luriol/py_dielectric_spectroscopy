@@ -98,6 +98,7 @@ def get_J(t, Vt):
     J = 1j * (4 / (2 * N)) * np.dot(E, Vt) / b     # Inverse transform to retrieve transfer function
     return W[:N // 2], J[:N // 2]                  # Keep positive frequency components only
 
+
 def get_kappa(t, Vt, RC):
     """
     Calculate the dielectric function κ(ω) from voltage response V(t) using the RC divider model.
