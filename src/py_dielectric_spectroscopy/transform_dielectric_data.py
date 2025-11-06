@@ -98,6 +98,50 @@ def get_J(t, Vt):
     J = 1j * (4 / (2 * N)) * np.dot(E, Vt) / b     # Inverse transform to retrieve transfer function
     return W[:N // 2], J[:N // 2]                  # Keep positive frequency components only
 
+import numpy as np
+
+import numpy as np
+
+import numpy as np
+
+import numpy as np
+
+def odd_fft_transform_aligned(t, Vt):
+    """
+    FFT-based odd-harmonic transform with exact normalization
+    and phase alignment to match the direct O(N^2) implementation.
+    """
+    # Preprocess exactly like your pipeline
+    Vt = Vt / Vt[0] - 0.5
+
+    N = Vt.size
+    t0 = t[0]
+    # Use endpoint dt to avoid cumulative float error
+    dt = (t[-1] - t[0]) / (N - 1)
+    # Full-period consistent with FFT of mirrored array
+    T = 2 * N * dt
+
+    # Enforce antisymmetric extension for odd-only spectrum
+    Vfull = np.concatenate([Vt, -Vt])  # length 2N
+
+    # Unnormalized FFT (exact DFT)
+    F = np.fft.fft(Vfull)
+
+    # Odd harmonic bins and angular frequencies
+    odd_bins = 2 * np.arange(N) + 1            # 1,3,5,...,(2N-1)
+    W = 2 * np.pi * odd_bins / T               # matches direct method grid
+
+    # Scaling (from earlier derivation): J_n = -(i * W * T)/(4N) * F[odd_bin]
+    # Phase-align to the true start time t0:
+    phase = np.exp(-1j * W * t0)
+    J = -1j * (W * T) * F[odd_bins] * phase / (4 * N)
+
+    # Keep positive-frequency half, like the original
+    return W[:N // 2], J[:N // 2]
+
+
+
+
 
 def get_kappa(t, Vt, RC):
     """
@@ -113,6 +157,7 @@ def get_kappa(t, Vt, RC):
             - W (ndarray): Angular frequencies (rad/s).
             - kappa (ndarray): Complex dielectric function κ(ω).
     """
-    W, J = get_J(t, Vt)                                # Compute frequency response
+    # W, J = get_J(t, Vt)                                # Compute frequency response
+    W, J = odd_fft_transform_aligned(t, Vt)
     kappa = (1 / J - 1) / (1j * W * RC)                # Invert RC model to retrieve κ(ω)
     return W, kappa
