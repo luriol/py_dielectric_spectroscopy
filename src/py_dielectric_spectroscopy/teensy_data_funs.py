@@ -11,63 +11,122 @@ from scipy.optimize import root_scalar
 
 
 
-def pt1000_lookup(R_measured):
+import numpy as np
+from scipy.optimize import root_scalar
+
+
+def _pt1000_resistance_to_temperature_core(R_eff):
     """
-    Given resistance R in ohms, return the corresponding temperature in °C
-    for a Pt1000 using the inverse of the Callendar–Van Dusen equation.
-    Returns -999.0 on any error or out-of-range input.
+    Core solver assuming Pt1000 scaling.
+    Returns temperature (°C) or raises on failure.
     """
+
     # Constants for Pt1000 (ITS-90)
     R0 = 1000.0
     A = 3.9083e-3
     B = -5.775e-7
-    C_neg = -4.183e-12  # Only used for T < 0 °C
+    C_neg = -4.183e-12
 
-    # Quick input guards
-    if R_measured is None or not np.isfinite(R_measured):
-        return -999.0
+    Tmin, Tmax = -200.0, 850.0
 
     def R_of_T(T):
         C = C_neg if T < 0 else 0.0
         return R0 * (1 + A*T + B*T*T + C*(T - 100.0)*T**3)
 
-    # Physical validity check for the given bracket
-    Tmin, Tmax = -200.0, 850.0
+    # Validity range
     Rmin, Rmax = R_of_T(Tmin), R_of_T(Tmax)
-    lo, hi = (min(Rmin, Rmax), max(Rmin, Rmax))
-    if not (lo <= R_measured <= hi):
+    lo, hi = min(Rmin, Rmax), max(Rmin, Rmax)
+
+    if not (lo <= R_eff <= hi):
+        raise ValueError(f"Resistance out of range: {R_eff:.2f} Ω")
+
+    # ---- T >= 0 °C (analytic first)
+    if R_eff >= R0:
+        c = 1.0 - (R_eff / R0)
+        disc = A*A - 4.0*B*c
+
+        if disc >= 0.0:
+            T1 = (-A + np.sqrt(disc)) / (2.0 * B)
+            T2 = (-A - np.sqrt(disc)) / (2.0 * B)
+
+            for T in (T1, T2):
+                if np.isfinite(T) and (0.0 <= T <= Tmax):
+                    return float(T)
+
+        # fallback numeric
+        sol = root_scalar(lambda T: R_of_T(T) - R_eff,
+                          bracket=[0.0, Tmax], method="brentq")
+        if sol.converged:
+            return float(sol.root)
+
+        raise RuntimeError("Root solve failed for T >= 0")
+
+    # ---- T < 0 °C (numeric)
+    sol = root_scalar(lambda T: R_of_T(T) - R_eff,
+                      bracket=[Tmin, 0.0], method="brentq")
+
+    if sol.converged:
+        return float(sol.root)
+
+    raise RuntimeError("Root solve failed for T < 0")
+
+
+def pt_resistance_to_temperature(R_measured, sensor="pt1000", auto_fallback=True):
+    """
+    Convert resistance to temperature with automatic Pt100/Pt1000 fallback.
+
+    Returns temperature (°C) or -999.0 on failure.
+    """
+
+    if R_measured is None or not np.isfinite(R_measured):
+        print(f"[pt] Invalid resistance: {R_measured}")
         return -999.0
 
+    sensor = sensor.lower()
+
+    def scale(R, s):
+        if s == "pt100":
+            return 10.0 * R
+        elif s == "pt1000":
+            return R
+        else:
+            raise ValueError(f"Unknown sensor type: {s}")
+
+    # Try primary sensor first
     try:
-        # Use analytic inverse for T >= 0: R = R0 * (1 + A T + B T^2)
-        if R_measured >= R0:
-            # Solve B T^2 + A T + (1 - R/R0) = 0
-            c = 1.0 - (R_measured / R0)
-            disc = A*A - 4.0*B*c
-            if disc < 0.0:
-                return -999.0
-            # Pick the physically meaningful root (positive T, B < 0)
-            T1 = (-A + np.sqrt(disc)) / (2.0*B)
-            T2 = (-A - np.sqrt(disc)) / (2.0*B)
-            # Choose the root ≥ 0 and within [0, Tmax]
-            candidates = [t for t in (T1, T2) if np.isfinite(t) and (0.0 <= t <= Tmax)]
-            if candidates:
-                return float(candidates[0])
-            # Fallback to numeric if analytic selection failed
-            sol = root_scalar(lambda T: R_of_T(T) - R_measured,
-                              bracket=[0.0, Tmax], method='brentq')
-            return float(sol.root) if sol.converged else -999.0
+        R_eff = scale(R_measured, sensor)
+        T = _pt1000_resistance_to_temperature_core(R_eff)
+        return T
 
-        # For T < 0, use full CVD with C term and brentq in [-200, 0]
-        sol = root_scalar(lambda T: R_of_T(T) - R_measured,
-                          bracket=[Tmin, 0.0], method='brentq')
-        return float(sol.root) if sol.converged else -999.0
+    except Exception as e_primary:
 
-    except Exception:
-        return -999.0
+        if not auto_fallback:
+            print(f"[pt] Failed ({sensor}): {e_primary}")
+            return -999.0
+
+        # Try alternate sensor
+        alt = "pt1000" if sensor == "pt100" else "pt100"
+
+        try:
+            R_eff = scale(R_measured, alt)
+            T = _pt1000_resistance_to_temperature_core(R_eff)
+
+            print(
+                f"[pt] Fallback succeeded: interpreted as {alt} "
+                f"instead of {sensor}"
+            )
+            return T
+
+        except Exception as e_alt:
+            print(
+                f"[pt] Both interpretations failed: "
+                f"{sensor} ({e_primary}), {alt} ({e_alt})"
+            )
+            return -999.0
+
 
     
-def parse_teensy_bin(raw):
+def parse_teensy_bin(raw, Thermistor_sensor="pt100"):
     V_REF       = 3.3
     ADC_MAX_10  = 1023.0
     ADC_MAX_12  = 4095.0
@@ -111,7 +170,7 @@ def parse_teensy_bin(raw):
         T_C = None
     else:
         R_th = R_REF * V_th / (V_REF - V_th)
-        T_C = pt1000_lookup(R_th)
+        T_C = pt_resistance_to_temperature(R_th, sensor=Thermistor_sensor)
 
     return t_h, v_h, t_l1, v_l1, t_l2, v_l2, T_C, R_th 
 
@@ -125,7 +184,7 @@ def extract_number(fname):
 
 # Sort by numeric index in filename
 
-def load_data_files(zip_path, verbose=True):
+def load_data_files(zip_path, verbose=True, Thermistor_sensor="pt100"):
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         # Only process actual files (no directories)
         bin_files = sorted(
@@ -156,7 +215,7 @@ def load_data_files(zip_path, verbose=True):
                     raw = f.read()
 
                 # Parse the binary data block
-                result = parse_teensy_bin(raw)
+                result = parse_teensy_bin(raw, Thermistor_sensor=Thermistor_sensor)
                 if result[0] is None:
                     print(f"[WARN] Skipping corrupted file: {fname}")
                     continue

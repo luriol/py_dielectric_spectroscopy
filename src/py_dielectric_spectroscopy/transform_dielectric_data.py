@@ -98,14 +98,6 @@ def get_J(t, Vt):
     J = 1j * (4 / (2 * N)) * np.dot(E, Vt) / b     # Inverse transform to retrieve transfer function
     return W[:N // 2], J[:N // 2]                  # Keep positive frequency components only
 
-import numpy as np
-
-import numpy as np
-
-import numpy as np
-
-import numpy as np
-
 def odd_fft_transform_aligned(t, Vt):
     """
     FFT-based odd-harmonic transform with exact normalization
@@ -142,22 +134,16 @@ def odd_fft_transform_aligned(t, Vt):
 
 
 
-
 def get_kappa(t, Vt, RC):
-    """
-    Calculate the dielectric function κ(ω) from voltage response V(t) using the RC divider model.
-
-    Parameters:
-        t (ndarray): Time array covering half of the square-wave period (seconds).
-        Vt (ndarray): Measured or simulated voltage across the capacitor (V).
-        RC (float): Product of series resistance R and empty capacitor capacitance C0 (seconds).
-
-    Returns:
-        tuple:
-            - W (ndarray): Angular frequencies (rad/s).
-            - kappa (ndarray): Complex dielectric function κ(ω).
-    """
-    # W, J = get_J(t, Vt)                                # Compute frequency response
     W, J = odd_fft_transform_aligned(t, Vt)
-    kappa = (1 / J - 1) / (1j * W * RC)                # Invert RC model to retrieve κ(ω)
+
+    # --- FIX intermittent off-by-one ---
+    Nmin = min(len(W), len(J))
+    if len(W) != len(J):
+        print(f"[WARN] odd_fft length mismatch: W={len(W)}, J={len(J)} → trimming to {Nmin}")
+
+    W = W[:Nmin]
+    J = J[:Nmin]
+
+    kappa = (1 / J - 1) / (1j * W * RC)
     return W, kappa

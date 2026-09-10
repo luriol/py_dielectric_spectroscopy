@@ -84,6 +84,104 @@ def V_debye_time(t,R,C0,k_inf,Delta_k,tau,rho):
     V = (1 + alpha_1)*np.exp(alpha_1*t/tau)/alpha_1/(alpha_1-alpha_2)
     V += (1 + alpha_2)*np.exp(alpha_2*t/tau)/alpha_2/(alpha_2-alpha_1)
     V *= tau/tau_inf
-    return -V.real
+    V += tau/2/alpha_1/alpha_2/tau_inf 
+    return V.real +.5
 
-        
+
+def V_debye_time_stable(t, R, C0, k_inf, Delta_k, tau, rho):
+    """
+    More numerically stable version of V_debye_time.
+    Returns values intended to be in [0, 1] (optionally clipped).
+    """
+    clip01=True
+    eps_root=1e-30
+    eps_equal=1e-12
+    t = np.asarray(t, dtype=float)
+
+    # Basic times
+    tau_inf = k_inf * R * C0
+    tau_s   = (Delta_k + k_inf) * R * C0
+    tau_sig = rho * scc.epsilon_0
+    tau_0   = R * C0
+
+    # Quadratic coefficients in alpha:
+    # A*alpha^2 + B*alpha + C = 0
+    C = tau * (tau_0 + tau_sig)
+    A = tau_inf * tau_sig
+    B = tau_s * tau_sig + C
+
+    # If A is ~0, the quadratic degenerates; avoid division by ~0.
+    # (In that regime your model likely needs a separate limiting form.)
+    if np.any(np.abs(A) < eps_root):
+        V = np.full_like(t, np.nan, dtype=float)
+        if clip01:
+            return np.clip(np.nan_to_num(V, nan=0.0, posinf=0.0, neginf=0.0), 0.0, 1.0)
+        return np.nan_to_num(V, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Work in complex to keep sqrt well-defined for negative discriminant
+    A = A + 0j
+    B = B + 0j
+    Cc = C + 0j
+
+    D = B*B - 4*A*Cc
+    sqrtD = np.sqrt(D)
+
+    # Stable quadratic root computation:
+    # q = -0.5*(B + sign(B)*sqrtD)  (for real B)
+    # For complex, use a phase-based "sign" to avoid zero division.
+    signB = np.where(np.abs(B) > 0, B/np.abs(B), 1.0 + 0j)
+    q = -0.5 * (B + signB*sqrtD)
+
+    # Roots: alpha1 = q/A, alpha2 = C/q
+    # Guard q ~ 0
+    if np.any(np.abs(q) < eps_root):
+        # Fall back to the direct formula if q is too small
+        alpha1 = (-B + sqrtD) / (2*A)
+        alpha2 = (-B - sqrtD) / (2*A)
+    else:
+        alpha1 = q / A
+        alpha2 = Cc / q
+
+    x = t / tau  # dimensionless time
+
+    # f(alpha) = ((1+alpha)/alpha) * exp(alpha*x)
+    # Evaluate as written; the *difference quotient* below avoids the worst singularities.
+    def f(alpha):
+        return ((1.0 + alpha) / alpha) * np.exp(alpha * x)
+
+    # When alpha1 ~ alpha2, use derivative limit: V ~ (tau/tau_inf) * f'(alpha)
+    # f'(a) = exp(a x) * [ x*(1+1/a) - 1/a^2 ]
+    def fprime(alpha):
+        ea = np.exp(alpha * x)
+        return ea * (x * (1.0 + 1.0/alpha) - 1.0/(alpha*alpha))
+
+    da = alpha1 - alpha2
+    use_deriv = np.abs(da) <= eps_equal * (1.0 + np.maximum(np.abs(alpha1), np.abs(alpha2)))
+
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore", under="ignore"):
+        Vc = np.empty_like(x, dtype=complex)
+        if np.isscalar(use_deriv):
+            if use_deriv:
+                alpha = -B/(2*A)  # double-root location
+                Vc = fprime(alpha)
+            else:
+                Vc = (f(alpha1) - f(alpha2)) / da
+        else:
+            # vectorized mask (rare here since alpha1/alpha2 are scalars, but safe)
+            alpha = -B/(2*A)
+            Vc[use_deriv] = fprime(alpha)
+            Vc[~use_deriv] = (f(alpha1) - f(alpha2)) / da
+
+        Vc *= (tau / tau_inf)
+    
+    Vc +=     tau/2/alpha1/alpha2/tau_inf 
+    V = -Vc.real
+    
+
+    # Last-resort cleanup
+    V = np.nan_to_num(V, nan=0.0, posinf=0.0, neginf=0.0)
+
+    if clip01:
+        V = np.clip(V, 0.0, 1.0)
+
+    return V
