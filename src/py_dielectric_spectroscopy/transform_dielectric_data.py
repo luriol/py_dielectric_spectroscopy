@@ -1,79 +1,137 @@
-import scipy.constants as scc
-import numpy as np
-from lmfit import Model
-import inspect
+"""Square-wave response and dielectric transfer functions.
 
-# test comment
+The forward model has three layers:
+    capacitance model -> RC divider -> odd-harmonic square-wave response.
+The inverse/time-to-frequency routines are retained below.
+"""
+
+import numpy as np
+import scipy.constants as scc
+
+
+# -----------------------------------------------------------------------------
+# Shared numerical and circuit calculations
+# -----------------------------------------------------------------------------
 
 def get_NT(t):
-    """
-    Determine number of data points and full period T of the square wave.
+    """Return (N, T), assuming t contains N uniformly spaced half-period samples.
 
-    Assumes input array t covers exactly half of the square-wave period.
-
-    Parameters:
-        t (ndarray): Time array covering half a period (seconds).
-
-    Returns:
-        tuple:
-            - N (int): Number of points in the half-period.
-            - T (float): Full period of the square wave (seconds).
+    The full square-wave period is T = 2*N*dt. The original code's convention
+    is preserved: t is expected to start at zero, with the endpoint excluded.
     """
     N = t.size
     dt = t[1] - t[0]
     T = 2 * (t[-1] + dt)
     return N, T
 
-def V_debye_sim(t, R, C0, k0, Delta_k, tau, rho):
-    """
-    Simulate the voltage response across a capacitor with Debye dielectric driven by a square wave.
 
-    The circuit model is a series RC voltage divider, with the capacitor containing the dielectric medium.
+def square_wave_response(t, transfer_function, **kwargs):
+    """Sum odd harmonics of a unit-amplitude, zero-mean square wave.
 
-    Parameters:
-        t (ndarray): Time array covering half of the square-wave period (seconds).
-        R (float): Resistance in series with the capacitor (Ω).
-        C0 (float): Capacitance of the empty capacitor (F).
-        k0 (float): High-frequency dielectric constant.
-        Delta_k (float): Dielectric relaxation strength.
-        tau (float): Debye relaxation time (seconds).
-        rho (float): Resistivity of the dielectric medium (Ω·m).
+    transfer_function(W, **kwargs) must return complex gains for an array W
+    of positive angular frequencies (radians/second).
 
-    Returns:
-        ndarray: Simulated voltage across the capacitor over time t (V).
+    Preserves the original Fourier coefficients and phase convention.
     """
     N, T = get_NT(t)
-    indcs = 2 * np.arange(N) + 1                   # Odd harmonics indices
-    W = 2 * np.pi * indcs / T                      # Angular frequencies of odd harmonics
-    E = np.exp(1j * np.outer(W, t))                # Fourier basis (complex exponentials)
-    b = -4 / (W * T)                               # Square wave Fourier coefficients
-    C = C0 * sim_kappa(W, k0, Delta_k, tau, rho)   # Complex capacitance with dielectric
-    J = 1 / (1 + 1j * W * R * C)                   # Transfer function of RC divider
-    arg = b * J                                    # Adjust Fourier amplitudes by transfer function
-    Vt = np.imag(np.dot(arg, E))                   # Voltage response (imaginary part ensures real output)
-    return Vt + Vt[0]  # Offset to ensure non-negative voltage
+    harmonics = 2 * np.arange(N) + 1
+    W = 2 * np.pi * harmonics / T
+    E = np.exp(1j * np.outer(W, t))
+    b = -4 / (W * T)
+    J = transfer_function(W, **kwargs)
+    return np.imag(np.dot(b * J, E))
+
+
+def RC_divider_transfer(W, R, capacitance_function, **kwargs):
+    """Voltage transfer function across a possibly complex capacitance.
+
+    The source drives series R followed by sample admittance i*W*C(W).
+    capacitance_function(W, **kwargs) returns capacitance in farads.
+    """
+    C = capacitance_function(W, **kwargs)
+    return 1 / (1 + 1j * W * R * C)
+
+
+# -----------------------------------------------------------------------------
+# 1. Ordinary capacitor
+# -----------------------------------------------------------------------------
+
+def constant_capacitance(W, C0):
+    """Frequency-independent capacitance in farads."""
+    return np.full_like(W, C0, dtype=complex)
+
 
 def V_C_sim(t, R, C0):
+    """Square-wave voltage response across an ordinary capacitor."""
+    return square_wave_response(
+        t, RC_divider_transfer,
+        R=R, capacitance_function=constant_capacitance, C0=C0,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 2. Debye dielectric with DC conductivity
+# -----------------------------------------------------------------------------
+
+def sim_kappa(W, k_inf, Delta_k, tau, rho):
+    """Complex Debye relative permittivity, including DC conduction.
+
+    Uses the exp(+i*omega*t) convention; rho is resistivity in ohm-metres.
     """
-    Simulate the voltage response across a capacitor 
-    with constant dielectric driven by a square wave.
-
-    The circuit model is a series RC voltage divider, with the capacitor containing the dielectric medium.
+    return (k_inf + Delta_k / (1 + 1j * W * tau)
+            - 1j / (rho * scc.epsilon_0 * W))
 
 
-    Returns:
-        ndarray: Simulated voltage across the capacitor over time t (V).
+def debye_capacitance(W, C0, k_inf, Delta_k, tau, rho):
+    """Frequency-dependent Debye capacitance, in farads."""
+    return C0 * sim_kappa(W, k_inf, Delta_k, tau, rho)
+
+
+def V_debye_sim(t, R, C0, k0, Delta_k, tau, rho):
+    """Square-wave voltage response for a Debye dielectric.
+
+    Maintains the original parameter name k0 and offset convention Vt+Vt[0].
     """
-    N, T = get_NT(t)
-    indcs = 2 * np.arange(N) + 1                   # Odd harmonics indices
-    W = 2 * np.pi * indcs / T                      # Angular frequencies of odd harmonics
-    E = np.exp(1j * np.outer(W, t))                # Fourier basis (complex exponentials)
-    b = -4 / (W * T)                               # Square wave Fourier coefficients
-    C = C0    # Complex capacitance with dielectric
-    J = 1 / (1 + 1j * W * R * C)                   # Transfer function of RC divider
-    arg = b * J                                    # Adjust Fourier amplitudes by transfer function
-    Vt = np.imag(np.dot(arg, E))                   # Voltage response (imaginary part ensures real output)
-    return Vt
+    Vt = square_wave_response(
+        t, RC_divider_transfer,
+        R=R, capacitance_function=debye_capacitance,
+        C0=C0, k_inf=k0, Delta_k=Delta_k, tau=tau, rho=rho,
+    )
+    return Vt + Vt[0]
+
+
+# -----------------------------------------------------------------------------
+# 3. Cole-Cole dielectric with DC conductivity
+# -----------------------------------------------------------------------------
+
+def cole_cole_kappa(W, k_inf, Delta_k, tau, alpha, rho):
+    """Complex Cole-Cole relative permittivity; alpha=1 gives Debye."""
+    return (k_inf + Delta_k / (1 + (1j * W * tau)**alpha)
+            - 1j / (rho * scc.epsilon_0 * W))
+
+
+def cole_cole_capacitance(W, C0, k_inf, Delta_k, tau, alpha, rho):
+    """Frequency-dependent Cole-Cole capacitance, in farads."""
+    return C0 * cole_cole_kappa(W, k_inf, Delta_k, tau, alpha, rho)
+
+
+def V_cole_cole_sim(t, R, C0, k_inf, Delta_k, tau, alpha, rho):
+    """Square-wave voltage response for a Cole-Cole dielectric.
+
+    Maintains the previous offset convention Vt+Vt[0].
+    """
+    Vt = square_wave_response(
+        t, RC_divider_transfer,
+        R=R, capacitance_function=cole_cole_capacitance,
+        C0=C0, k_inf=k_inf, Delta_k=Delta_k,
+        tau=tau, alpha=alpha, rho=rho,
+    )
+    return Vt + Vt[0]
+
+
+# -----------------------------------------------------------------------------
+# Existing inverse/time-to-frequency functions (unchanged)
+# -----------------------------------------------------------------------------
 
 def get_J(t, Vt):
     """
