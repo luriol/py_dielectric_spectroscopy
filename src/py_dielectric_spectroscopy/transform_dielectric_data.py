@@ -41,6 +41,19 @@ def square_wave_response(t, transfer_function, **kwargs):
     J = transfer_function(W, **kwargs)
     return np.imag(np.dot(b * J, E))
 
+def square_wave_voltage_response(
+    t, transfer_function, dc_gain,
+    V_high=3.0, V_low=0.0, **kwargs
+):
+    """Physical voltage response following a falling square-wave edge."""
+
+    v = square_wave_response(t, transfer_function, **kwargs)
+
+    V_mid = (V_high + V_low) / 2
+    V_pp = V_high - V_low
+
+    return V_mid * dc_gain + V_pp * v
+
 
 def RC_divider_transfer(W, R, capacitance_function, **kwargs):
     """Voltage transfer function across a possibly complex capacitance.
@@ -52,6 +65,7 @@ def RC_divider_transfer(W, R, capacitance_function, **kwargs):
     return 1 / (1 + 1j * W * R * C)
 
 
+
 # -----------------------------------------------------------------------------
 # 1. Ordinary capacitor
 # -----------------------------------------------------------------------------
@@ -61,11 +75,17 @@ def constant_capacitance(W, C0):
     return np.full_like(W, C0, dtype=complex)
 
 
-def V_C_sim(t, R, C0):
-    """Square-wave voltage response across an ordinary capacitor."""
-    return square_wave_response(
-        t, RC_divider_transfer,
-        R=R, capacitance_function=constant_capacitance, C0=C0,
+def V_C_sim(t, R, C0, V_high=3.0, V_low=0.0):
+    """Voltage across an ordinary capacitor following a falling square-wave edge."""
+    return square_wave_voltage_response(
+        t,
+        RC_divider_transfer,
+        dc_gain=1.0,
+        V_high=V_high,
+        V_low=V_low,
+        R=R,
+        capacitance_function=constant_capacitance,
+        C0=C0
     )
 
 
@@ -87,18 +107,26 @@ def debye_capacitance(W, C0, k_inf, Delta_k, tau, rho):
     return C0 * sim_kappa(W, k_inf, Delta_k, tau, rho)
 
 
-def V_debye_sim(t, R, C0, k0, Delta_k, tau, rho):
-    """Square-wave voltage response for a Debye dielectric.
+def V_debye_sim(t, R, C0, k0, Delta_k, tau, rho,
+                V_high=3.0, V_low=0.0):
+    """Voltage response of a Debye dielectric following a falling square-wave edge."""
 
-    Maintains the original parameter name k0 and offset convention Vt+Vt[0].
-    """
-    Vt = square_wave_response(
-        t, RC_divider_transfer,
-        R=R, capacitance_function=debye_capacitance,
-        C0=C0, k_inf=k0, Delta_k=Delta_k, tau=tau, rho=rho,
+    dc_gain = 1 / (1 + R * C0 / (rho * scc.epsilon_0))
+
+    return square_wave_voltage_response(
+        t,
+        RC_divider_transfer,
+        dc_gain=dc_gain,
+        V_high=V_high,
+        V_low=V_low,
+        R=R,
+        capacitance_function=debye_capacitance,
+        C0=C0,
+        k_inf=k0,
+        Delta_k=Delta_k,
+        tau=tau,
+        rho=rho
     )
-    return Vt + Vt[0]
-
 
 # -----------------------------------------------------------------------------
 # 3. Cole-Cole dielectric with DC conductivity
@@ -115,18 +143,27 @@ def cole_cole_capacitance(W, C0, k_inf, Delta_k, tau, alpha, rho):
     return C0 * cole_cole_kappa(W, k_inf, Delta_k, tau, alpha, rho)
 
 
-def V_cole_cole_sim(t, R, C0, k_inf, Delta_k, tau, alpha, rho):
-    """Square-wave voltage response for a Cole-Cole dielectric.
+def V_cole_cole_sim(t, R, C0, k_inf, Delta_k, tau, alpha, rho,
+                    V_high=3.0, V_low=0.0):
+    """Voltage response of a Cole-Cole dielectric following a falling square-wave edge."""
 
-    Maintains the previous offset convention Vt+Vt[0].
-    """
-    Vt = square_wave_response(
-        t, RC_divider_transfer,
-        R=R, capacitance_function=cole_cole_capacitance,
-        C0=C0, k_inf=k_inf, Delta_k=Delta_k,
-        tau=tau, alpha=alpha, rho=rho,
+    dc_gain = 1 / (1 + R * C0 / (rho * scc.epsilon_0))
+
+    return square_wave_voltage_response(
+        t,
+        RC_divider_transfer,
+        dc_gain=dc_gain,
+        V_high=V_high,
+        V_low=V_low,
+        R=R,
+        capacitance_function=cole_cole_capacitance,
+        C0=C0,
+        k_inf=k_inf,
+        Delta_k=Delta_k,
+        tau=tau,
+        alpha=alpha,
+        rho=rho
     )
-    return Vt + Vt[0]
 
 
 # -----------------------------------------------------------------------------
