@@ -24,30 +24,19 @@ def get_NT(t):
     T = 2 * (t[-1] + dt)
     return N, T
 
+def square_wave_response(t, transfer_function, dc_gain=1.0,
+                         V_high=3.0, V_low=0.0, **kwargs):
+    """Physical voltage response to a square wave."""
 
-def square_wave_response(t, transfer_function, **kwargs):
-    """Sum odd harmonics of a unit-amplitude, zero-mean square wave.
-
-    transfer_function(W, **kwargs) must return complex gains for an array W
-    of positive angular frequencies (radians/second).
-
-    Preserves the original Fourier coefficients and phase convention.
-    """
     N, T = get_NT(t)
     harmonics = 2 * np.arange(N) + 1
     W = 2 * np.pi * harmonics / T
+
     E = np.exp(1j * np.outer(W, t))
     b = -4 / (W * T)
     J = transfer_function(W, **kwargs)
-    return np.imag(np.dot(b * J, E))
 
-def square_wave_voltage_response(
-    t, transfer_function, dc_gain,
-    V_high=3.0, V_low=0.0, **kwargs
-):
-    """Physical voltage response following a falling square-wave edge."""
-
-    v = square_wave_response(t, transfer_function, **kwargs)
+    v = np.imag(np.dot(b * J, E))
 
     V_mid = (V_high + V_low) / 2
     V_pp = V_high - V_low
@@ -55,114 +44,57 @@ def square_wave_voltage_response(
     return V_mid * dc_gain + V_pp * v
 
 
-def RC_divider_transfer(W, R, capacitance_function, **kwargs):
-    """Voltage transfer function across a possibly complex capacitance.
-
-    The source drives series R followed by sample admittance i*W*C(W).
-    capacitance_function(W, **kwargs) returns capacitance in farads.
-    """
-    C = capacitance_function(W, **kwargs)
-    return 1 / (1 + 1j * W * R * C)
-
-
-
-# -----------------------------------------------------------------------------
-# 1. Ordinary capacitor
-# -----------------------------------------------------------------------------
-
-def constant_capacitance(W, C0):
-    """Frequency-independent capacitance in farads."""
-    return np.full_like(W, C0, dtype=complex)
-
-
-def V_C_sim(t, R, C0, V_high=3.0, V_low=0.0):
-    """Voltage across an ordinary capacitor following a falling square-wave edge."""
-    return square_wave_voltage_response(
-        t,
-        RC_divider_transfer,
-        dc_gain=1.0,
-        V_high=V_high,
-        V_low=V_low,
-        R=R,
-        capacitance_function=constant_capacitance,
-        C0=C0
-    )
-
 
 # -----------------------------------------------------------------------------
 # 2. Debye dielectric with DC conductivity
 # -----------------------------------------------------------------------------
 
-def sim_kappa(W, k_inf, Delta_k, tau, rho):
-    """Complex Debye relative permittivity, including DC conduction.
-
-    Uses the exp(+i*omega*t) convention; rho is resistivity in ohm-metres.
-    """
-    return (k_inf + Delta_k / (1 + 1j * W * tau)
-            - 1j / (rho * scc.epsilon_0 * W))
-
-
-def debye_capacitance(W, C0, k_inf, Delta_k, tau, rho):
-    """Frequency-dependent Debye capacitance, in farads."""
-    return C0 * sim_kappa(W, k_inf, Delta_k, tau, rho)
-
-
 def V_debye_sim(t, R, C0, k0, Delta_k, tau, rho,
                 V_high=3.0, V_low=0.0):
     """Voltage response of a Debye dielectric following a falling square-wave edge."""
 
+    def transfer_function(W):
+        kappa = (
+            k0
+            + Delta_k / (1 + 1j * W * tau)
+            - 1j / (rho * scc.epsilon_0 * W)
+        )
+        return 1 / (1 + 1j * W * R * C0 * kappa)
+
     dc_gain = 1 / (1 + R * C0 / (rho * scc.epsilon_0))
 
-    return square_wave_voltage_response(
+    return square_wave_response(
         t,
-        RC_divider_transfer,
+        transfer_function,
         dc_gain=dc_gain,
         V_high=V_high,
-        V_low=V_low,
-        R=R,
-        capacitance_function=debye_capacitance,
-        C0=C0,
-        k_inf=k0,
-        Delta_k=Delta_k,
-        tau=tau,
-        rho=rho
+        V_low=V_low
     )
 
 # -----------------------------------------------------------------------------
 # 3. Cole-Cole dielectric with DC conductivity
 # -----------------------------------------------------------------------------
 
-def cole_cole_kappa(W, k_inf, Delta_k, tau, alpha, rho):
-    """Complex Cole-Cole relative permittivity; alpha=1 gives Debye."""
-    return (k_inf + Delta_k / (1 + (1j * W * tau)**alpha)
-            - 1j / (rho * scc.epsilon_0 * W))
-
-
-def cole_cole_capacitance(W, C0, k_inf, Delta_k, tau, alpha, rho):
-    """Frequency-dependent Cole-Cole capacitance, in farads."""
-    return C0 * cole_cole_kappa(W, k_inf, Delta_k, tau, alpha, rho)
-
-
 def V_cole_cole_sim(t, R, C0, k_inf, Delta_k, tau, alpha, rho,
                     V_high=3.0, V_low=0.0):
     """Voltage response of a Cole-Cole dielectric following a falling square-wave edge."""
 
+    def transfer_function(W):
+        kappa = (
+            k_inf
+            + Delta_k / (1 + (1j * W * tau)**alpha)
+            - 1j / (rho * scc.epsilon_0 * W)
+        )
+        return 1 / (1 + 1j * W * R * C0 * kappa)
+
     dc_gain = 1 / (1 + R * C0 / (rho * scc.epsilon_0))
 
-    return square_wave_voltage_response(
+    return square_wave_response(
         t,
-        RC_divider_transfer,
+        transfer_function,
         dc_gain=dc_gain,
         V_high=V_high,
-        V_low=V_low,
-        R=R,
-        capacitance_function=cole_cole_capacitance,
-        C0=C0,
-        k_inf=k_inf,
-        Delta_k=Delta_k,
-        tau=tau,
-        alpha=alpha,
-        rho=rho
+        V_low=V_low
     )
 
 
@@ -242,3 +174,28 @@ def get_kappa(t, Vt, RC):
 
     kappa = (1 / J - 1) / (1j * W * RC)
     return W, kappa
+
+
+def V_two_cole_cole_sim(t, R, C0, k_inf,
+                        Delta_k1, tau1, alpha1,
+                        Delta_k2, tau2, alpha2, rho,
+                        V_high=3.0, V_low=0.0):
+    """Voltage response for two Cole-Cole relaxations and DC conductivity."""
+
+    def transfer_function(W):
+        kappa = (
+            k_inf
+            + Delta_k1 / (1 + (1j * W * tau1)**alpha1)
+            + Delta_k2 / (1 + (1j * W * tau2)**alpha2)
+            - 1j / (rho * scc.epsilon_0 * W)
+        )
+        return 1 / (1 + 1j * W * R * C0 * kappa)
+
+    dc_gain = 1 / (1 + R * C0 / (rho * scc.epsilon_0))
+
+    return square_wave_response(
+        t, transfer_function,
+        dc_gain=dc_gain,
+        V_high=V_high,
+        V_low=V_low
+    )
